@@ -1,60 +1,88 @@
-echo "Atualizando o sistema"
+#!/bin/bash
+
+echo "========================="
+echo " Atualizando o sistema "
+echo "========================="
 sudo apt update -y && sudo apt upgrade -y
 
-echo "Instalando o pacote boto3"
+echo "========================="
+echo " Instalando boto3 "
+echo "========================="
 pip install boto3
 
-echo "Instalando dependências necessárias"
+echo "========================="
+echo " Instalando dependências "
+echo "========================="
 sudo apt install -y jq tree openjdk-17-jdk
 
-echo "Atualizando o NPM para a última versão"
+echo "========================="
+echo " Atualizando NPM "
+echo "========================="
 sudo npm install -g npm@latest
 
-echo "Redimensionando o disco"
-echo "O tamanho desejado em GiB "
+echo "========================="
+echo " Redimensionando o disco Cloud9 "
+echo "========================="
+
+# --- DEFINIR TAMANHO NOVO DO DISCO (em GiB)
 export CLOUD9_DISK_NEW_SIZE=150
+echo "Novo tamanho definido: ${CLOUD9_DISK_NEW_SIZE} GiB"
 
-echo "O ID da instância EC2 do ambiente Cloud9 "
-export CLOUD9_EC2_INSTANCE_ID=$(curl http://169.254.169.254/latest/meta-data//instance-id)
+# --- PEGAR ID DA INSTÂNCIA DO CLOUD9
+export CLOUD9_EC2_INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
+echo "EC2 Instance ID: $CLOUD9_EC2_INSTANCE_ID"
 
-echo "O ID do disco EBS associado a essa instância "
-export CLOUD9_EC2_VOLUME_ID=$(aws ec2 describe-instances --instance-id $CLOUD9_EC2_INSTANCE_ID | jq -r .Reservations[0].Instances[0].BlockDeviceMappings[0].Ebs.VolumeId)
+# --- PEGAR ID DO VOLUME EBS
+export CLOUD9_EC2_VOLUME_ID=$(aws ec2 describe-instances \
+  --instance-id $CLOUD9_EC2_INSTANCE_ID \
+  | jq -r .Reservations[0].Instances[0].BlockDeviceMappings[0].Ebs.VolumeId)
 
-echo "Redimensionamento do volume EBS "
+echo "Volume EBS ID: $CLOUD9_EC2_VOLUME_ID"
+
+# --- ALTERAR O TAMANHO DO VOLUME EBS
+echo "Enviando requisição para expandir o EBS..."
 aws ec2 modify-volume --volume-id $CLOUD9_EC2_VOLUME_ID --size $CLOUD9_DISK_NEW_SIZE
 
-echo "Aguardando a finalização do redimensionamento. "
-while [ "$(aws ec2 describe-volumes-modifications --volume-id $CLOUD9_EC2_VOLUME_ID --filters Name=modification-state,Values="optimizing","completed" | jq '.VolumesModifications | length')" != "1" ]; do
-	echo "waiting volume..."
-	sleep 1
+echo "Aguardando finalização do redimensionamento..."
+while [ "$(aws ec2 describe-volumes-modifications \
+  --volume-id $CLOUD9_EC2_VOLUME_ID \
+  --filters Name=modification-state,Values="optimizing","completed" \
+  | jq '.VolumesModifications | length')" != "1" ]; do
+    echo "Esperando o volume ser expandido..."
+    sleep 1
 done
 
-echo "Executando lsblk para verificar o nome do disco. "
+echo "Volume expandido com sucesso!"
+
+echo "========================="
+echo " Ajustando partições "
+echo "========================="
+
+# Listar discos
 lsblk
 
-export DISK_NAME=$(sudo lsblk -o NAME -n | grep '\<nvme0n1\>')
-echo "O nome do disco é: $DISK_NAME "
+# Detectar nome correto do disco (nvme ou xvda)
+export DISK_NAME=$(lsblk -o NAME -n | grep -E '^nvme0n1$|^xvda$')
 
-if [ -z "$DISK_NAME" ]
-then
-	export DISK_NAME=$(sudo lsblk -o NAME -n | grep '\<xvda\>')
+echo "Disco detectado: $DISK_NAME"
 
-	if [ -z "$DISK_NAME" ]
-	then
-		echo "Não foi possível encontrar o nome do disco. O redimensionamento não terá efeito. "
-		exit 1
-	else
-		echo "O nome do disco é: $DISK_NAME "
-		echo "Reescrevendo a tabela de partição para uso full do espaço solicitado. "
-		sudo growpart /dev/xvda 1
+if [[ "$DISK_NAME" == "nvme0n1" ]]; then
+    echo "Expandindo partição NVMe..."
+    sudo growpart /dev/nvme0n1 1
+    sudo resize2fs /dev/nvme0n1p1
 
-		echo "Expandindo o tamanho da particao sistema de arquivos. "
-		sudo resize2fs /dev/xvda1
-	fi
+elif [[ "$DISK_NAME" == "xvda" ]]; then
+    echo "Expandindo partição padrão (xvda)..."
+    sudo growpart /dev/xvda 1
+    sudo resize2fs /dev/xvda1
+
 else
-	echo "Reescrevendo a tabela de partição para uso full do espaço solicitado. "
-	sudo growpart /dev/nvme0n1 1
-
-	echo "Expandindo o tamanho do sistema de arquivos. "
-	sudo resize2fs /dev/nvme0n1p1
+    echo "ERRO: Não foi possível localizar nvme0n1 ou xvda."
+    exit 1
 fi
+
+echo "========================="
+echo " Redimensionamento concluído! "
+echo "========================="
+
+df -h
