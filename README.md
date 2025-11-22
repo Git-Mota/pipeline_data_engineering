@@ -36,7 +36,7 @@ curl -sS https://raw.githubusercontent.com/Git-Mota/pipeline_data_engineering/re
 Ainda no terminal do Cloud9:
 
 ``` bash
-sudo apt update -y && sudo apt upgrade -y
+sudo apt update -y 
 sudo apt install -y openjdk-17-jdk
 ```
 
